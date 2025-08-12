@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Pharmacist Scheduling App</title>
+  <script src="https://cdn.jsdelivr.net/npm/react@18.2.0/umd/react.development.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/react-dom@18.2.0/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+</head>
+<body class="text-base">
+  <div id="root" class="container p-1 max-w-full"></div>
+  <script type="text/babel">
+    const { useState, useEffect } = React;
+    const { createRoot } = ReactDOM;
+
+    const App = () => {
+      const [staff, setStaff] = useState([]);
+      const [perDiem, setPerDiem] = useState([]);
+      const [perDiemMax, setPerDiemMax] = useState({}); // {name: number}
+      const [personData, setPersonData] = useState({}); // {name: {date: '' | 'unavailable' | 'V' | 'B' | 'S' | 'L2' | 'Prefer-B' | 'Prefer-S' | 'Prefer-L2' | 'AM' | 'PM' | 'available' | 'P' | 'VAL'}}
+      const [year, setYear] = useState(2025);
+      const [month, setMonth] = useState(8); // 1-12
+      const [schedule, setSchedule] = useState({}); // {'YYYY-MM-DD': [{name, role}]}
+      const [newStaff, setNewStaff] = useState('');
+      const [newPerDiem, setNewPerDiem] = useState('');
+      const [errors, setErrors] = useState([]);
+      const [isLoading, setIsLoading] = useState(false);
+      const [lastGenerated, setLastGenerated] = useState(null);
+      const roles = ['B', 'S', 'L2'];
+
+      // Load from localStorage
+      useEffect(() => {
+        const savedStaff = JSON.parse(localStorage.getItem('staff')) || [];
+        const savedPerDiem = JSON.parse(localStorage.getItem('perDiem')) || [];
+        const savedPerDiemMax = JSON.parse(localStorage.getItem('perDiemMax')) || {};
+        const savedPersonData = JSON.parse(localStorage.getItem('personData')) || {};
+        const savedYear = JSON.parse(localStorage.getItem('year')) || 2025;
+        const savedMonth = JSON.parse(localStorage.getItem('month')) || 8;
+        setStaff(savedStaff);
+        setPerDiem(savedPerDiem);
+        setPerDiemMax(savedPerDiemMax);
+        setPersonData(savedPersonData);
+        setYear(savedYear);
+        setMonth(savedMonth);
+      }, []);
+
+      // Save to localStorage
+      useEffect(() => {
+        localStorage.setItem('staff', JSON.stringify(staff));
+        localStorage.setItem('perDiem', JSON.stringify(perDiem));
+        localStorage.setItem('perDiemMax', JSON.stringify(perDiemMax));
+        localStorage.setItem('personData', JSON.stringify(personData));
+        localStorage.setItem('year', JSON.stringify(year));
+        localStorage.setItem('month', JSON.stringify(month));
+      }, [staff, perDiem, perDiemMax, personData, year, month]);
+
+      const clearData = () => {
+        localStorage.clear();
+        setStaff([]);
+        setPerDiem([]);
+        setPerDiemMax({});
+        setPersonData({});
+        setYear(2025);
+        setMonth(8);
+        setSchedule({});
+        setErrors([]);
+        setLastGenerated(null);
+      };
+
+      const deleteStaff = (name) => {
+        setStaff(staff.filter(n => n !== name));
+        const updatedPersonData = { ...personData };
+        delete updatedPersonData[name];
+        setPersonData(updatedPersonData);
+      };
+
+      const deletePerDiem = (name) => {
+        setPerDiem(perDiem.filter(n => n !== name));
+        const updatedPerDiemMax = { ...perDiemMax };
+        delete updatedPerDiemMax[name];
+        setPerDiemMax(updatedPerDiemMax);
+        const updatedPersonData = { ...personData };
+        delete updatedPersonData[name];
+        setPersonData(updatedPersonData);
+      };
+
+      const addStaff = () => {
+        if (newStaff && !staff.includes(newStaff)) {
+          setStaff([...staff, newStaff]);
+          setPersonData({ ...personData, [newStaff]: {} });
+          setNewStaff('');
+        }
+      };
+
+      const addPerDiem = () => {
+        if (newPerDiem && !perDiem.includes(newPerDiem)) {
+          setPerDiem([...perDiem, newPerDiem]);
+          setPersonData({ ...personData, [newPerDiem]: {} });
+          setPerDiemMax({ ...perDiemMax, [newPerDiem]: 5 });
+          setNewPerDiem('');
+        }
+      };
+
+      const handleKeyDownStaff = (e) => {
+        if (e.key === 'Enter') {
+          addStaff();
+        }
+      };
+
+      const handleKeyDownPerDiem = (e) => {
+        if (e.key === 'Enter') {
+          addPerDiem();
+        }
+      };
+
+      const updatePersonData = (name, date, value) => {
+        setPersonData({
+          ...personData,
+          [name]: {
+            ...personData[name],
+            [date]: value
+          }
+        });
+      };
+
+      const pad = n => n < 10 ? '0' + n : '' + n;
+
+      const getDateStr = (y, m, d) => `${y}-${pad(m)}-${pad(d)}`;
+      const getWeekday = (y, m, d) => new Date(y, m - 1, d).toLocaleString('en-us', { weekday: 'short' });
+
+      const generateSchedule = () => {
+        setIsLoading(true);
+        setErrors([]);
+        setSchedule({});
+
+        // Prepare data for Web Worker
+        const data = {
+          staff,
+          perDiem,
+          perDiemMax,
+          personData,
+          year,
+          month,
+          roles
+        };
+
+        // Create Web Worker
+        const worker = new Worker('worker.js');
+        worker.onmessage = (e) => {
+          const { schedule: newSchedule, errors: workerErrors } = e.data;
+          setSchedule(newSchedule);
+          setErrors(workerErrors);
+          setLastGenerated(new Date().toLocaleString());
+          setIsLoading(false);
+          worker.terminate(); // Clean up worker
+        };
+
+        worker.onerror = (e) => {
+          setErrors([...errors, `Worker error: ${e.message}`]);
+          setIsLoading(false);
+          worker.terminate();
+        };
+
+        // Send data to worker
+        worker.postMessage(data);
+      };
+
+      const exportToExcel = () => {
+        const rows = [];
+        Object.keys(schedule).sort().forEach(date => {
+          schedule[date].forEach(as => {
+            rows.push({ Date: date, Pharmacist: as.name, Role: as.role });
+          });
+        });
+        const ws = XLSX.utils.json_to_sheet(rows);
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, 'Schedule');
+        XLSX.writeFile(wb, 'schedule.xlsx');
+      };
+
+      const numDays = new Date(year, month, 0).getDate();
+      const days = Array.from({ length: numDays }, (_, i) => i + 1);
+      const firstDow = new Date(year, month - 1, 1).getDay();
+
+      return (
+        <div className="space-y-4">
+          <h1 className="text-2xl font-bold text-center">Pharmacist Scheduling App</h1>
+
+          <div className="flex space-x-2">
+            <input
+              type="number"
+              placeholder="Year"
+              value={year}
+              onChange={e => setYear(parseInt(e.target.value))}
+              className="p-1 border rounded text-base"
+            />
+            <input
+              type="number"
+              placeholder="Month (1-12)"
+              value={month}
+              onChange={e => setMonth(parseInt(e.target.value))}
+              className="p-1 border rounded text-base"
+            />
+          </div>
+
+          {/* Add Staff */}
+          <div className="bg-white p-4 rounded-lg shadow-md">
+            <h2 className="text-lg font-semibold mb-2">Add Staff Pharmacist</h2>
+            <input
+              type="text"
+              placeholder="Staff Name"
+              value={newStaff}
+              onChange={e => setNewStaff(e.target.value)}
+              onKeyDown={handleKeyDownStaff}
+              className="w-full p-1 border rounded mb-1 text-base"
+            />
+            <button onClick={addStaff} className="bg-blue-500 text-white px-3 py-1 rounded text-base">Add</button>
+          </div>
+
+          {/* Staff List */}
+          <div className="bg-white p-4 rounded-lg shadow-md">
+            <h2 className="text-lg font-semibold mb-2">Staff Pharmacists</h2>
+            <ul className="space-y-1">
+              {staff.map(s => (
+                <li key={s} className="flex justify-between items-center text-base">
+                  {s}
+                  <button onClick={() => deleteStaff(s)} className="text-red-500 text-base">Delete</button>
+                </li>
+              ))}
+            </ul>
+          </div>
+
+          {/* Add Per Diem */}
+          <div className="bg-white p-4 rounded-lg shadow-md">
+            <h2 className="text-lg font-semibold mb-2">Add Per Diem Pharmacist</h2>
+            <input
+              type="text"
+              placeholder="Per Diem Name"
+              value={newPerDiem}
+              onChange={e => setNewPerDiem(e.target.value)}
+              onKeyDown={handleKeyDownPerDiem}
+              className="w-full p-1 border rounded mb-1 text-base"
+            />
+            <button onClick={addPerDiem} className="bg-blue-500 text-white px-3 py-1 rounded text-base">Add</button>
+          </div>
+
+          {/* Per Diem List with Max Days */}
+          <div className="bg-white p-4 rounded-lg shadow-md">
+            <h2 className="text-lg font-semibold mb-2">Per Diem Pharmacists</h2>
+            <ul className="space-y-1">
+              {perDiem.map(p => (
+                <li key={p} className="flex justify-between items-center text-base">
+                  {p} - Max days per month:
+                  <input
+                    type="number"
+                    value={perDiemMax[p]}
+                    onChange={e => setPerDiemMax({ ...perDiemMax, [p]: parseInt(e.target.value) || 5 })}
+                    className="ml-2 p-1 border rounded w-12 text-base"
+                  />
+                  <button onClick={() => deletePerDiem(p)} className="text-red-500 text-base ml-2">Delete</button>
+                </li>
+              ))}
+            </ul>
+          </div>
+
+          {/* Availability and Preferences Grid */}
+          {year && month && (staff.length > 0 || perDiem.length > 0) && (
+            <div className="bg-white p-4 rounded-lg shadow-md overflow-x-auto">
+              <h2 className="text-lg font-semibold mb-2">Availability and Preferences Grid</h2>
+              <table className="table-auto border-collapse border border-gray-300 min-w-full text-base">
+                <thead>
+                  <tr>
+                    <th className="border px-2 py-1 sticky left-0 bg-white">Name</th>
+                    {days.map(d => (
+                      <th key={d} className="border px-2 py-1">{d} ({getWeekday(year, month, d)})</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {staff.map(s => (
+                    <tr key={s}>
+                      <td className="border px-2 py-1 sticky left-0 bg-white">{s} (Staff)</td>
+                      {days.map(d => {
+                        const date = getDateStr(year, month, d);
+                        const value = personData[s]?.[date] || '';
+                        let bgClass = '';
+                        if (value === 'available' || value === '' || value.startsWith('Prefer-')) bgClass = 'bg-green-200';
+                        if (value === 'unavailable' || value === 'V') bgClass = 'bg-red-200';
+                        return (
+                          <td key={d} className={`border px-2 py-1 ${bgClass}`}>
+                            <select
+                              value={value}
+                              onChange={e => updatePersonData(s, date, e.target.value)}
+                              className="p-1 border rounded text-base w-full"
+                            >
+                              <option value="">Available/No pref</option>
+                              <option value="unavailable">Unavailable (X)</option>
+                              <option value="V">Vacation (V)</option>
+                              <option value="P">Project (P)</option>
+                              <option value="Prefer-B">B-pref</option>
+                              <option value="Prefer-S">S-pref</option>
+                              <option value="Prefer-L2">L2-pref</option>
+                              <option value="AM">AM</option>
+                              <option value="PM">PM</option>
+                              <option value="VAL">VAL</option>
+                            </select>
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  ))}
+                  {perDiem.map(p => (
+                    <tr key={p}>
+                      <td className="border px-2 py-1 sticky left-0 bg-white">{p} (Per Diem)</td>
+                      {days.map(d => {
+                        const date = getDateStr(year, month, d);
+                        const value = personData[p]?.[date] || 'unavailable';
+                        let bgClass = '';
+                        if (value === 'available' || value.startsWith('Prefer-')) bgClass = 'bg-green-200';
+                        if (value === 'unavailable') bgClass = 'bg-red-200';
+                        return (
+                          <td key={d} className={`border px-2 py-1 ${bgClass}`}>
+                            <select
+                              value={value}
+                              onChange={e => updatePersonData(p, date, e.target.value)}
+                              className="p-1 border rounded text-base w-full"
+                            >
+                              <option value="unavailable">Unavailable</option>
+                              <option value="available">Available</option>
+                              <option value="Prefer-B">B-pref</option>
+                              <option value="AM">AM</option>
+                              <option value="PM">PM</option>
+                              <option value="VAL">VAL</option>
+                            </select>
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          <button onClick={generateSchedule} className="bg-purple-500 text-white px-4 py-2 rounded w-full">Generate Schedule</button>
+          {lastGenerated && <p className="text-center text-gray-600 mt-2">Last generated: {lastGenerated}</p>}
+          <button onClick={clearData} className="bg-gray-500 text-white px-4 py-2 rounded w-full mt-2">Clear Data</button>
+
+          {/* Errors Display */}
+          {errors.length > 0 && (
+            <div className="bg-red-100 p-4 rounded-lg mt-4">
+              <h3 className="text-lg font-bold text-red-700">Warnings/Errors:</h3>
+              <ul className="list-disc ml-6 text-red-700">
+                {errors.map((err, i) => <li key={i}>{err}</li>)}
+              </ul>
+            </div>
+          )}
+
+          {/* Schedule Calendar Display */}
+          <div className="bg-white p-6 rounded-lg shadow-md">
+            <h2 className="text-xl font-semibold mb-4">Schedule Calendar</h2>
+            <div className="grid grid-cols-7 gap-2">
+              {Array.from({ length: firstDow }).map((_, i) => <div key={`empty-${i}`} className="border p-2 min-h-[200px]"></div>)}
+              {days.map(d => {
+                const date = getDateStr(year, month, d);
+                return (
+                  <div key={d} className="border p-2 min-h-[200px]">
+                    <strong>{d} ({getWeekday(year, month, d)})</strong>
+                    {schedule[date]?.map((as, i) => (
+                      <div key={i}>{as.name} ({as.role})</div>
+                    ))}
+                  </div>
+                );
+              })}
+            </div>
+            {Object.keys(schedule).length > 0 && (
+              <button onClick={exportToExcel} className="bg-red-500 text-white px-4 py-2 rounded mt-4 w-full">Export to Excel</button>
+            )}
+          </div>
+
+          {/* Loading Text */}
+          {isLoading && <p className="text-center text-red-500 mt-2">Generating...</p>}
+        </div>
+      );
+    };
+
+    const root = createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>
